@@ -31,10 +31,19 @@ if (
     or not Path(OUTPUTS_PATH).exists()
 ):
     print(
-        f"ERROR: expecting {IMAGES_PATH}, and {OUTPUTS_PATH} directories to exist; "
-        "consider setting the WORKSPACE environment variable"
+        f"ERROR: Missing directories: {WORKSPACE_PATH}, {IMAGES_PATH} and/or {OUTPUTS_PATH}"
     )
-    sys.exit(1)
+    response = (
+        input("Would you like to create these directories? (yes/no): ").strip().lower()
+    )
+    if response in ["yes", "y"]:
+        Path(WORKSPACE_PATH).mkdir(parents=True, exist_ok=True)
+        Path(IMAGES_PATH).mkdir(parents=True, exist_ok=True)
+        Path(OUTPUTS_PATH).mkdir(parents=True, exist_ok=True)
+        print("✓ Directories created successfully")
+    else:
+        print("Aborting: directories not created")
+        sys.exit(1)
 
 PROJECT = input("Enter PROJECT_NAME: ")
 # Backblaze setup
@@ -242,4 +251,4 @@ if __name__ == "__main__":
     verify_models_is_accessible()
     sync("b2://hlam-ai-datasets/" + PROJECT, IMAGES_PATH)
     main()
-    sync( OUTPUTS_PATH, "b2://hlam-ai-models/" + PROJECT)
+    sync(OUTPUTS_PATH, "b2://hlam-ai-models/" + PROJECT)
