@@ -30,7 +30,7 @@ config:
         # for instance image2.jpg and image2.txt. Only jpg, jpeg, and png are supported currently
         # images will automatically be resized and bucketed into the resolution specified
         # on windows, escape back slashes with another backslash so
-        - folder_path: "/workspace/images/
+        - folder_path: "/workspace/images/"
           caption_ext: "txt"
           caption_dropout_rate: 0.05  # will drop out the caption 5% of time
           shuffle_tokens: false  # shuffle caption order, split by commas
