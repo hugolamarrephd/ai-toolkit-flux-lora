@@ -1,4 +1,4 @@
-# Additional environment variables: PROJECT_NAME, B2_ID, B2_TOKEN
+# Backblaze B2 environment variables: B2_ID, B2_TOKEN
 import time
 import os
 from pathlib import Path
@@ -22,15 +22,78 @@ from b2sdk.v2 import (
 
 # Load the .env file if it exists
 load_dotenv()
-ROOT_PATH = os.environ.get("ROOT_PATH", "/workspace/")
-PROJECT = os.environ["PROJECT_NAME"]
+WORKSPACE_PATH = os.environ.get("WORKSPACE", "/home/workspace/")
+IMAGES_PATH = WORKSPACE_PATH + "images/"
+OUTPUTS_PATH = WORKSPACE_PATH + "outputs/"
+if (
+    not Path(WORKSPACE_PATH).exists()
+    or not Path(IMAGES_PATH).exists()
+    or not Path(OUTPUTS_PATH).exists()
+):
+    print(
+        f"ERROR: expecting {IMAGES_PATH}, and {OUTPUTS_PATH} directories to exist; "
+        "consider setting the WORKSPACE environment variable"
+    )
+    sys.exit(1)
+
+PROJECT = input("Enter PROJECT_NAME: ")
 # Backblaze setup
-B2 = B2Api(InMemoryAccountInfo()) # type: ignore
+B2 = B2Api(InMemoryAccountInfo())  # type: ignore
 B2.authorize_account(
     "production",
     os.environ["B2_ID"],
     os.environ["B2_TOKEN"],
 )
+
+
+# Verify that the project folder exists in hlam-ai-datasets bucket
+def verify_datasets_project_folder_exists():
+    """Verify that the PROJECT folder exists in the hlam-ai-datasets bucket"""
+    try:
+        bucket = B2.get_bucket_by_name("hlam-ai-datasets")
+        # List files in the project folder to verify it exists
+        folders = set(
+            folder.replace("/", "")
+            for _, folder in bucket.ls(recursive=False, latest_only=True)
+        )
+        if PROJECT not in folders:
+            print(
+                f"ERROR: Project folder '{PROJECT}' not found in hlam-ai-datasets bucket; "
+                f"available projects are: {folders}"
+            )
+            print(
+                f"...Please create a folder containing the images to train FLUX on "
+                f"at b2://hlam-ai-datasets/{PROJECT}/"
+            )
+            sys.exit(1)
+
+        print(f"✓ Project folder '{PROJECT}' found in hlam-ai-datasets bucket")
+    except Exception as e:
+        print(f"ERROR: Failed to verify project folder in bucket: {e}")
+        sys.exit(1)
+
+
+def verify_models_is_accessible():
+    """Verify that hlam-ai-models bucket exists and we have write access"""
+    try:
+        bucket = B2.get_bucket_by_name("hlam-ai-models")
+
+        # Test write access by checking if we can get bucket info
+        bucket_info = bucket.get_id()
+        print(bucket_info)
+
+        if not bucket_info:
+            print("ERROR: Unable to access hlam-ai-models bucket info")
+            sys.exit(1)
+
+        print(f"✓ hlam-ai-models bucket exists and is accessible")
+
+    except Exception as e:
+        print(f"ERROR: Failed to access hlam-ai-models bucket: {e}")
+        print("Please ensure:")
+        print("  - hlam-ai-models bucket exists in Backblaze B2")
+        print("  - Your B2 credentials have write access to the bucket")
+        sys.exit(1)
 
 
 def sync(source, destination):
@@ -175,15 +238,8 @@ def main():
 
 
 if __name__ == "__main__":
-    Path(ROOT_PATH).mkdir(exist_ok=True)
-    Path(ROOT_PATH + "outputs").mkdir(exist_ok=True)
-    Path(ROOT_PATH + "images").mkdir(exist_ok=True)
-    sync(
-        "b2://hlam-ai-datasets/" + PROJECT,
-        ROOT_PATH + "images/",
-    )
+    verify_datasets_project_folder_exists()
+    verify_models_is_accessible()
+    sync("b2://hlam-ai-datasets/" + PROJECT, IMAGES_PATH)
     main()
-    sync(
-        ROOT_PATH + "outputs/",
-        "b2://hlam-ai-models/" + PROJECT,
-    )
+    sync( OUTPUTS_PATH, "b2://hlam-ai-models/" + PROJECT)
