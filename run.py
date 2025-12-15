@@ -173,12 +173,12 @@ def main():
 
 def try_to_stop_runpod_pod():
     try:
-        import runpod
-
+        import subprocess
         pod_id = os.getenv("RUNPOD_POD_ID")
-        if pod_id is not None:
-            print("Stopping RunPod pod: ", pod_id)
-            runpod.stop_pod(pod_id)
+        print("RunPod pod ID:", pod_id)
+        if pod_id:
+            # Use runpodctl to stop the current pod
+            subprocess.run(["runpodctl", "stop", "pod", pod_id])
             print("RunPod pod stopped successfully")
     except Exception as e:
         print("RunPod stop pod error:", e)
