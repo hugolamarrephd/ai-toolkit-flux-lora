@@ -33,22 +33,12 @@ if (
     or not Path(IMAGES_PATH).exists()
     or not Path(OUTPUTS_PATH).exists()
 ):
-    print(
-        f"ERROR: Missing directories: {WORKSPACE_PATH}, {IMAGES_PATH} and/or {OUTPUTS_PATH}"
-    )
-    response = (
-        input("Would you like to create these directories? (yes/no): ").strip().lower()
-    )
-    if response in ["yes", "y"]:
-        Path(WORKSPACE_PATH).mkdir(parents=True, exist_ok=True)
-        Path(IMAGES_PATH).mkdir(parents=True, exist_ok=True)
-        Path(OUTPUTS_PATH).mkdir(parents=True, exist_ok=True)
-        print("✓ Directories created successfully")
-    else:
-        print("Aborting: directories not created")
-        sys.exit(1)
+    print(f"Missing directories: {WORKSPACE_PATH}, {IMAGES_PATH} and/or {OUTPUTS_PATH}")
+    Path(WORKSPACE_PATH).mkdir(parents=True, exist_ok=True)
+    Path(IMAGES_PATH).mkdir(parents=True, exist_ok=True)
+    Path(OUTPUTS_PATH).mkdir(parents=True, exist_ok=True)
+    print("✓ Directories created successfully")
 
-PROJECT = input("Enter PROJECT_NAME: ")
 # Backblaze setup
 B2 = B2Api(InMemoryAccountInfo())  # type: ignore
 B2.authorize_account(
@@ -59,7 +49,7 @@ B2.authorize_account(
 
 
 # Verify that the project folder exists in datasets bucket
-def verify_datasets_project_folder_exists():
+def verify_datasets_project_folder_exists(project):
     """Verify that the PROJECT folder exists in the datasets bucket"""
     try:
         bucket = B2.get_bucket_by_name(DATASET_BUCKET)
@@ -68,18 +58,18 @@ def verify_datasets_project_folder_exists():
             folder.replace("/", "")
             for _, folder in bucket.ls(recursive=False, latest_only=True)
         )
-        if PROJECT not in folders:
+        if project not in folders:
             print(
-                f"ERROR: Project folder '{PROJECT}' not found in {DATASET_BUCKET} bucket; "
+                f"ERROR: Project folder '{project}' not found in {DATASET_BUCKET} bucket; "
                 f"available projects are: {folders}"
             )
             print(
                 f"...Please create a folder containing the images to train FLUX on "
-                f"at b2://{DATASET_BUCKET}/{PROJECT}/"
+                f"at b2://{DATASET_BUCKET}/{project}/"
             )
             sys.exit(1)
 
-        print(f"✓ Project folder '{PROJECT}' found in {DATASET_BUCKET} bucket")
+        print(f"✓ Project folder '{project}' found in {DATASET_BUCKET} bucket")
     except Exception as e:
         print(f"ERROR: Failed to verify project folder in bucket: {e}")
         sys.exit(1)
@@ -178,10 +168,16 @@ def print_end_message(jobs_completed, jobs_failed):
 def main():
     parser = argparse.ArgumentParser()
 
+    parser.add_argument(
+        "project",
+        type=str,
+        help="Name of project",
+    )
+
     # require at lease one config file
     parser.add_argument(
         "config_file_list",
-        nargs="+",
+        nargs="*",
         type=str,
         help="Name of config file (eg: person_v1 for config/person_v1.json/yaml), or full path if it is not in config folder, you can pass multiple config files and run them all sequentially",
     )
@@ -211,9 +207,16 @@ def main():
     if args.log is not None:
         setup_log_to_file(args.log)
 
+    PROJECT = args.project
+    print(PROJECT)
+    verify_datasets_project_folder_exists(PROJECT)
+    verify_models_is_accessible()
+    sync(f"b2://{DATASET_BUCKET}/" + PROJECT, IMAGES_PATH)
+    sync(OUTPUTS_PATH, f"b2://{MODEL_BUCKET}/" + PROJECT)
+
     config_file_list = args.config_file_list
     if len(config_file_list) == 0:
-        raise Exception("You must provide at least one config file")
+        config_file_list = ["main.yaml"]
 
     jobs_completed = 0
     jobs_failed = 0
@@ -247,11 +250,8 @@ def main():
             if not args.recover:
                 print_end_message(jobs_completed, jobs_failed)
                 raise e
+    sync(OUTPUTS_PATH, f"b2://{MODEL_BUCKET}/" + PROJECT)
 
 
 if __name__ == "__main__":
-    verify_datasets_project_folder_exists()
-    verify_models_is_accessible()
-    sync(f"b2://{DATASET_BUCKET}/" + PROJECT, IMAGES_PATH)
     main()
-    sync(OUTPUTS_PATH, f"b2://{MODEL_BUCKET}/" + PROJECT)
