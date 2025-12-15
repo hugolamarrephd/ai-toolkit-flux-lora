@@ -28,31 +28,13 @@ MODEL_BUCKET = os.environ.get("MODEL_BUCKET", "hlam-ai-models")
 DATASET_BUCKET = os.environ.get("DATASET_BUCKET", "hlam-ai-datasets")
 IMAGES_PATH = WORKSPACE_PATH + "images/"
 OUTPUTS_PATH = WORKSPACE_PATH + "outputs/"
-if (
-    not Path(WORKSPACE_PATH).exists()
-    or not Path(IMAGES_PATH).exists()
-    or not Path(OUTPUTS_PATH).exists()
-):
-    print(f"Missing directories: {WORKSPACE_PATH}, {IMAGES_PATH} and/or {OUTPUTS_PATH}")
-    Path(WORKSPACE_PATH).mkdir(parents=True, exist_ok=True)
-    Path(IMAGES_PATH).mkdir(parents=True, exist_ok=True)
-    Path(OUTPUTS_PATH).mkdir(parents=True, exist_ok=True)
-    print("✓ Directories created successfully")
-
-# Backblaze setup
-B2 = B2Api(InMemoryAccountInfo())  # type: ignore
-B2.authorize_account(
-    "production",
-    os.environ["B2_ID"],
-    os.environ["B2_TOKEN"],
-)
 
 
 # Verify that the project folder exists in datasets bucket
-def verify_datasets_project_folder_exists(project):
+def verify_project_folder_exists(conn, bucket, project):
     """Verify that the PROJECT folder exists in the datasets bucket"""
     try:
-        bucket = B2.get_bucket_by_name(DATASET_BUCKET)
+        bucket = conn.get_bucket_by_name(bucket)
         # List files in the project folder to verify it exists
         folders = set(
             folder.replace("/", "")
@@ -60,48 +42,25 @@ def verify_datasets_project_folder_exists(project):
         )
         if project not in folders:
             print(
-                f"ERROR: Project folder '{project}' not found in {DATASET_BUCKET} bucket; "
+                f"ERROR: Project folder '{project}' not found in {bucket} bucket; "
                 f"available projects are: {folders}"
             )
             print(
                 f"...Please create a folder containing the images to train FLUX on "
-                f"at b2://{DATASET_BUCKET}/{project}/"
+                f"at b2://{bucket}/{project}/"
             )
             sys.exit(1)
 
-        print(f"✓ Project folder '{project}' found in {DATASET_BUCKET} bucket")
+        print(f"✓ Project folder '{project}' found in {bucket} bucket")
     except Exception as e:
         print(f"ERROR: Failed to verify project folder in bucket: {e}")
         sys.exit(1)
 
 
-def verify_models_is_accessible():
-    """Verify that models bucket exists and we have write access"""
-    try:
-        bucket = B2.get_bucket_by_name(MODEL_BUCKET)
-
-        # Test write access by checking if we can get bucket info
-        bucket_info = bucket.get_id()
-        print(bucket_info)
-
-        if not bucket_info:
-            print(f"ERROR: Unable to access {MODEL_BUCKET} bucket info")
-            sys.exit(1)
-
-        print(f"✓ {MODEL_BUCKET} bucket exists and is accessible")
-
-    except Exception as e:
-        print(f"ERROR: Failed to access {MODEL_BUCKET} bucket: {e}")
-        print("Please ensure:")
-        print(f" - {MODEL_BUCKET} bucket exists in Backblaze B2")
-        print("  - Your B2 credentials have write access to the bucket")
-        sys.exit(1)
-
-
-def sync(source, destination):
+def sync(conn, source, destination):
     """Sync source to destination using Backblaze B2"""
-    source = parse_folder(source, B2)
-    destination = parse_folder(destination, B2)
+    source = parse_folder(source, conn)
+    destination = parse_folder(destination, conn)
     policies_manager = ScanPoliciesManager(exclude_all_symlinks=True)
     synchronizer = Synchronizer(
         max_workers=10,
@@ -143,115 +102,89 @@ from toolkit.print import print_acc, setup_log_to_file
 accelerator = get_accelerator()
 
 
-def print_end_message(jobs_completed, jobs_failed):
-    if not accelerator.is_main_process:
-        return
-    failure_string = (
-        f"{jobs_failed} failure{'' if jobs_failed == 1 else 's'}"
-        if jobs_failed > 0
-        else ""
-    )
-    completed_string = (
-        f"{jobs_completed} completed job{'' if jobs_completed == 1 else 's'}"
-    )
-
-    print_acc("")
-    print_acc("========================================")
-    print_acc("Result:")
-    if len(completed_string) > 0:
-        print_acc(f" - {completed_string}")
-    if len(failure_string) > 0:
-        print_acc(f" - {failure_string}")
-    print_acc("========================================")
-
-
 def main():
+    setup_log_to_file(OUTPUTS_PATH + "log.txt")
+    if (
+        not Path(WORKSPACE_PATH).exists()
+        or not Path(IMAGES_PATH).exists()
+        or not Path(OUTPUTS_PATH).exists()
+    ):
+        print(
+            f"Missing directories: {WORKSPACE_PATH}, {IMAGES_PATH} and/or {OUTPUTS_PATH}"
+        )
+        Path(WORKSPACE_PATH).mkdir(parents=True, exist_ok=True)
+        Path(IMAGES_PATH).mkdir(parents=True, exist_ok=True)
+        Path(OUTPUTS_PATH).mkdir(parents=True, exist_ok=True)
+        print("✓ Directories created successfully")
+    # Backblaze setup
+    B2 = B2Api(InMemoryAccountInfo())  # type: ignore
+    B2.authorize_account(
+        "production",
+        os.environ["B2_ID"],
+        os.environ["B2_TOKEN"],
+    )
+    # Extract project name from command line arguments
+    # ```
+    # $ python3 run.py PROJECT_NAME
+    # ```
     parser = argparse.ArgumentParser()
-
     parser.add_argument(
         "project",
         type=str,
         help="Name of project",
     )
-
-    # require at lease one config file
-    parser.add_argument(
-        "config_file_list",
-        nargs="*",
-        type=str,
-        help="Name of config file (eg: person_v1 for config/person_v1.json/yaml), or full path if it is not in config folder, you can pass multiple config files and run them all sequentially",
-    )
-
-    # flag to continue if failed job
-    parser.add_argument(
-        "-r",
-        "--recover",
-        action="store_true",
-        help="Continue running additional jobs even if a job fails",
-    )
-
-    # flag to continue if failed job
-    parser.add_argument(
-        "-n",
-        "--name",
-        type=str,
-        default=None,
-        help="Name to replace [name] tag in config file, useful for shared config file",
-    )
-
-    parser.add_argument(
-        "-l", "--log", type=str, default=None, help="Log file to write output to"
-    )
     args = parser.parse_args()
 
-    if args.log is not None:
-        setup_log_to_file(args.log)
-
     PROJECT = args.project
-    print(PROJECT)
-    verify_datasets_project_folder_exists(PROJECT)
-    verify_models_is_accessible()
-    sync(f"b2://{DATASET_BUCKET}/" + PROJECT, IMAGES_PATH)
-    sync(OUTPUTS_PATH, f"b2://{MODEL_BUCKET}/" + PROJECT)
-
-    config_file_list = args.config_file_list
-    if len(config_file_list) == 0:
-        config_file_list = ["main.yaml"]
-
-    jobs_completed = 0
-    jobs_failed = 0
-
-    if accelerator.is_main_process:
-        print_acc(
-            f"Running {len(config_file_list)} job{'' if len(config_file_list) == 1 else 's'}"
-        )
-
-    for config_file in config_file_list:
+    verify_project_folder_exists(B2, DATASET_BUCKET, PROJECT)
+    verify_project_folder_exists(B2, MODEL_BUCKET, PROJECT)
+    sync(
+        B2,
+        f"b2://{DATASET_BUCKET}/" + PROJECT,
+        IMAGES_PATH,
+    )  # download images and configuration
+    sync(
+        B2,
+        f"b2://{MODEL_BUCKET}/" + PROJECT,
+        OUTPUTS_PATH,
+    )  # persist previous runs, logs, etc. if any
+    config_file = IMAGES_PATH + ".config.yaml"
+    try:
+        job = get_job(config_file, args.project)
+        job.run()
+        job.cleanup()
+    except Exception as e:
+        print_acc(f"Error running job: {e}")
         try:
-            job = get_job(config_file, args.name)
-            job.run()
-            job.cleanup()
-            jobs_completed += 1
-        except Exception as e:
-            print_acc(f"Error running job: {e}")
-            jobs_failed += 1
-            try:
-                job.process[0].on_error(e)
-            except Exception as e2:
-                print_acc(f"Error running on_error: {e2}")
-            if not args.recover:
-                print_end_message(jobs_completed, jobs_failed)
-                raise e
-        except KeyboardInterrupt as e:
-            try:
-                job.process[0].on_error(e)
-            except Exception as e2:
-                print_acc(f"Error running on_error: {e2}")
-            if not args.recover:
-                print_end_message(jobs_completed, jobs_failed)
-                raise e
-    sync(OUTPUTS_PATH, f"b2://{MODEL_BUCKET}/" + PROJECT)
+            job.process[0].on_error(e)
+        except Exception as e2:
+            print_acc(f"Error running on_error: {e2}")
+    except KeyboardInterrupt as e:
+        try:
+            job.process[0].on_error(e)
+        except Exception as e2:
+            print_acc(f"Error running on_error: {e2}")
+    sync(
+        B2,
+        OUTPUTS_PATH,
+        f"b2://{MODEL_BUCKET}/" + PROJECT,
+    )
+
+
+def try_to_stop_runpod_pod():
+    try:
+        import runpod
+
+        pod_id = os.getenv("RUNPOD_POD_ID")
+        if pod_id is not None:
+            print("Stopping RunPod pod: ", pod_id)
+            runpod.stop_pod(pod_id)
+            print("RunPod pod stopped successfully")
+    except Exception as e:
+        print("RunPod stop pod error:", e)
+        print("Could not stop pod")
 
 
 if __name__ == "__main__":
     main()
+    try_to_stop_runpod_pod()
